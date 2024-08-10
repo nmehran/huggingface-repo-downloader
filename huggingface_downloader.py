@@ -24,21 +24,21 @@ Usage:
     python huggingface_downloader.py <repository_url> [options]
 
 Example:
-    (    # TOKEN CAN BE ACCESSED VIA ${HOME}/.cache/huggingface/token)
     python huggingface_downloader.py meta-llama/Meta-Llama-3.1-8B-Instruct/tree/main --use-auth-token
 
 Options:
     -o, --output         Specify output directory (optional)
     --use-auth-token     Use the Hugging Face auth token for private repos
     --revision           Specific revision to download (default: main)
+    --fast               Enable fast transfer mode (requires hf_transfer package)
+    --auth-help          Show instructions for setting up authentication
     --help               Show this help message and exit
 
 Fast Transfer Mode:
     To enable fast transfer mode, install the 'hf_transfer' package:
     pip install hf_transfer
 
-    The script will automatically use fast transfer mode if it's installed.
-
+    Use the --fast flag to enable fast transfer mode.
 
 Authentication:
     To set up authentication for private repositories:
@@ -47,16 +47,7 @@ Authentication:
     3. Run 'huggingface-cli login'
     4. Enter your token when prompted
 
-    For Git operations, configure your credentials:
-    git config --global credential.helper store
-    git credential approve <<EOF
-    protocol=https
-    host=huggingface.co
-    username=_token
-    password=YOUR_TOKEN_HERE
-    EOF
-
-    Your token is stored at ${HOME}/.cache/huggingface/token
+    For detailed instructions, use the --auth-help flag.
 """
 
 import os
@@ -65,7 +56,6 @@ import os
 os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
 
 import argparse
-import hashlib
 import importlib
 import logging
 import re
@@ -219,6 +209,10 @@ def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"
                 resume_download=False,
                 token=use_auth_token
             )
+        elif "401 Client Error" in str(e) and "Cannot access gated repo" in str(e):
+            logger.error(f"Error: Cannot access gated repository. Use --auth-help for instructions on setting up authentication.")
+            logger.error(f"If you have already set up authentication, make sure you're using the --use-auth-token flag.")
+            sys.exit(1)
         else:
             raise
 

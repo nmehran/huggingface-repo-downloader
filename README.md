@@ -35,8 +35,8 @@ python huggingface_downloader.py <repository_url> [options]
 - `--use-auth-token`: Use the Hugging Face auth token for private or access-restricted repos
 - `--revision`: Specific revision to download (default: main)
 - `--fast`: Enable fast transfer mode (requires `hf_transfer` package)
-- `--help`: Show help message and exit
 - `--auth-help`: Show instructions for setting up authentication
+- `--help`: Show help message and exit
 
 ### Examples
 
@@ -73,7 +73,15 @@ By default, fast transfer mode is disabled to ensure a more user-friendly experi
 
 ## Authentication
 
-For private or access-restricted repositories, you need to set up authentication. Run `python huggingface_downloader.py --auth-help` for detailed instructions on how to set up your Hugging Face token and configure Git credentials.
+For private or access-restricted repositories, you need to set up authentication. Follow these steps:
+
+1. Visit https://huggingface.co/settings/tokens to generate a token.
+2. Run 'huggingface-cli login' and enter your token when prompted.
+
+For detailed instructions, run:
+```
+python huggingface_downloader.py --auth-help
+```
 
 ## Contributing
 
