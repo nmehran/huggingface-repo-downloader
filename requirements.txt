@@ -1,0 +1,3 @@
+hf_transfer
+huggingface_hub
+tqdm
