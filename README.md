@@ -14,8 +14,8 @@ This Python script allows you to download repositories from Hugging Face, includ
 
 1. Clone the repository:
    ```
-   git clone https://github.com/your-username/huggingface-downloader.git
-   cd huggingface-downloader
+   git clone {{ GITHUB_REPOSITORY_URL }}
+   cd {{ GITHUB_REPOSITORY_NAME }}
    ```
 
 2. Install the required packages:
