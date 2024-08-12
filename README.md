@@ -10,6 +10,7 @@ This Python script allows you to download repositories from Hugging Face, includ
 - Skip already downloaded files
 - Optional fast transfer mode for high-bandwidth connections
 - Ignore specific files or patterns using glob syntax
+- Download multiple repositories using a URL file
 
 ## Installation
 
@@ -28,6 +29,7 @@ This Python script allows you to download repositories from Hugging Face, includ
 
 ```
 python huggingface_downloader.py <repository_url> [options]
+python huggingface_downloader.py --url-file <file_path> [options]
 ```
 
 ### Options
@@ -37,6 +39,7 @@ python huggingface_downloader.py <repository_url> [options]
 - `--revision`: Specific revision to download (default: main)
 - `--fast`: Enable fast transfer mode (requires `hf_transfer` package)
 - `--ignore-file`: Specify a file containing glob patterns to ignore
+- `--url-file`: Specify a file containing repository URLs to download
 - `--force`: Force re-download of all files, ignoring existing metadata
 - `--help`: Show help message and exit
 - `--auth-help`: Show instructions for setting up authentication
@@ -73,6 +76,11 @@ python huggingface_downloader.py <repository_url> [options]
    python huggingface_downloader.py meta-llama/Meta-Llama-3.1-8B-Instruct --force
    ```
    
+7. Download multiple repositories using a URL file:
+   ```
+   python huggingface_downloader.py --url-file repos.txt --use-auth-token
+   ```
+   
 ## Fast Transfer Mode
 
 The `--fast` flag enables fast transfer mode, which can significantly increase download speeds on high-bandwidth connections. However, it's important to note:
@@ -105,6 +113,29 @@ This would ignore all `.txt` files, everything in the `test_data` directory, and
 Note:
 - Lines starting with `#` (including those with leading whitespace) are treated as comments and ignored.
 - Empty lines are skipped.
+
+## URL File
+
+You can use a URL file to specify multiple repository URLs to download in a single run. This is useful for batch downloading repositories.
+
+To use a URL file:
+
+1. Create a text file (e.g., `repos.txt`) with one repository URL per line.
+2. Use the `--url-file` option when running the script, pointing to your URL file.
+
+Example `repos.txt` file content:
+```
+meta-llama/Meta-Llama-3.1-8B-Instruct
+facebook/bart-large
+google/t5-v1_1-large
+```
+
+This would download all three repositories in sequence.
+
+Note:
+- Lines starting with `#` are treated as comments and ignored.
+- Empty lines are skipped.
+- You can specify different revisions for each repository by appending `/tree/<revision>` to the URL.
 
 ## Metadata Handling
 

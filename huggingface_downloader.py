@@ -33,6 +33,7 @@ Options:
     --fast               Enable fast transfer mode (requires hf_transfer package)
     --auth-help          Show instructions for setting up authentication
     --ignore-file        Specify a file containing glob patterns to ignore
+    --url-file           Specify a file containing repository URLs to download
     --force              Force re-download of all files, ignoring existing metadata
     --help               Show this help message and exit
 
@@ -73,7 +74,7 @@ import time
 from fnmatch import fnmatch
 from tqdm import tqdm
 from typing import Tuple, List, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -500,6 +501,122 @@ def set_output_directory(specified_output: Optional[str], formatted_repo_id: str
     return output_dir
 
 
+def validate_and_process_urls(
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser
+) -> Tuple[List[str], Dict[str, List[str]]]:
+    """
+    Validate the URL and URL file arguments, and process the URLs.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+        parser (argparse.ArgumentParser): The argument parser object.
+
+    Returns:
+        Tuple[List[str], Dict[str, List[str]]]: A tuple containing:
+            - List[str]: List of valid URLs.
+            - Dict[str, List[str]]: A result dictionary for tracking successes and failures.
+    """
+    results = {'success': [], 'failure': []}
+
+    valid_urls = []
+
+    if bool(args.url) == bool(args.url_file):
+        parser.print_help()
+        logger.error("Error: Exactly one of URL or URL file must be provided.")
+        return valid_urls, results
+
+    if args.url_file:
+        try:
+            valid_urls, invalid_urls = process_url_file(args.url_file)
+            results['failure'].extend(invalid_urls)
+
+            if not valid_urls:
+                return valid_urls, results
+
+            logger.info(f"Found {len(valid_urls)} valid URLs in {args.url_file}")
+        except (FileNotFoundError, IOError) as e:
+            logger.error(str(e))
+            return valid_urls, results
+    else:
+        if not is_valid_repo_id_or_url(args.url):
+            logger.error(f"Invalid repository URL or ID: {args.url}")
+            return valid_urls, results
+        valid_urls = [args.url]
+        logger.info(f"Validated repository URL/ID: {args.url}")
+
+    return valid_urls, results
+
+
+def is_valid_repo_id_or_url(input_string: str) -> bool:
+    """
+    Check if the input string is a valid Hugging Face repository ID or URL.
+
+    Args:
+        input_string (str): The string to validate.
+
+    Returns:
+        bool: True if the input is a valid repository ID or URL, False otherwise.
+    """
+    # Decode URL-encoded string
+    decoded_input = unquote(input_string).strip().lstrip('/')
+
+    # Regex for repository ID with optional type prefix, tree, and branch
+    repo_id_pattern = (
+        r'^(?:datasets|spaces)?/?'                                   # Optional prefix for datasets or spaces
+        r'([a-zA-Z0-9][-a-zA-Z0-9._]{0,38}[a-zA-Z0-9])/'             # Username
+        r'([a-zA-Z0-9][-a-zA-Z0-9._]{1,100}[a-zA-Z0-9])'             # Repository name
+        r'(?:/tree/([a-zA-Z0-9][-a-zA-Z0-9._]{0,38}[a-zA-Z0-9]))?$'  # Optional tree and revision branch
+    )
+
+    # Regex for full Hugging Face URL
+    url_pattern = r'^(?:https?://)?(?:www\.)?huggingface\.co/' + repo_id_pattern.lstrip('^')
+
+    return bool(re.match(repo_id_pattern, decoded_input) or re.match(url_pattern, decoded_input))
+
+
+def process_url_file(file_path: str) -> Tuple[List[str], List[str]]:
+    """
+    Read a file containing Hugging Face repository URLs or IDs and return a list of valid entries.
+
+    Args:
+        file_path (str): Path to the file containing URLs or repository IDs.
+
+    Returns:
+        Tuple[List[str], List[str]]: A tuple containing:
+            - List of valid repository URLs or IDs from the file.
+            - List of invalid entries from the file.
+
+    Raises:
+        FileNotFoundError: If the specified file is not found.
+        IOError: If there's an error reading the file.
+    """
+    try:
+        with open(file_path, 'r') as f:
+            entries = [line.strip() for line in f if line.strip()]
+
+        if not entries:
+            logger.error(f"The file {file_path} is empty.")
+            return [], []
+
+        valid_entries = []
+        invalid_entries = []
+        for entry in entries:
+            if is_valid_repo_id_or_url(entry):
+                valid_entries.append(entry)
+            else:
+                logger.warning(f"Skipping invalid URL or Repository-ID: {entry}")
+                invalid_entries.append(entry)
+
+        return valid_entries, invalid_entries
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        raise
+    except IOError as e:
+        logger.error(f"Error reading file {file_path}: {str(e)}")
+        raise
+
+
 def download_file(
         repo_id: str,
         repo_type: str,
@@ -606,6 +723,102 @@ def download_repo(
     logger.info(f"Download completed. Files are stored in: {output_dir}")
 
 
+def process_single_repository(
+        url: str,
+        args: argparse.Namespace,
+        use_auth_token: Optional[str],
+        ignore_patterns: List[str]
+):
+    """
+    Process a single URL or ID for repository download.
+
+    Args:
+        url (str): The URL or ID of the Hugging Face repository.
+        args: The parsed command-line arguments.
+        use_auth_token (Optional[str]): The authentication token to use.
+        ignore_patterns (List[str]): A list of glob patterns for files to ignore.
+
+    Returns:
+        bool: True if the download was successful, False otherwise.
+    """
+    try:
+        # Extract directory format, infer repository type, and get revision
+        repo_id, formatted_repo_id, repo_type, revision = process_repo_info(url, args.revision, use_auth_token)
+
+        # Use script directory as default if no output directory is specified
+        output_dir = set_output_directory(args.output, formatted_repo_id)
+
+        logger.info(f"Downloading repository: {repo_id}")
+        logger.info(f"Revision: {args.revision}")
+
+        # Generate the metadata file path
+        metadata_file = get_metadata_file(output_dir, formatted_repo_id)
+
+        # Main download function
+        download_repo(
+            repo_id,
+            repo_type,
+            output_dir,
+            metadata_file,
+            use_auth_token,
+            args.revision,
+            args.force,
+            ignore_patterns
+        )
+        return True
+    except KeyboardInterrupt:
+        logger.warning(f"Download interrupted by user for {url}.")
+        return False
+    except Exception as e:
+        logger.error(f"An error occurred while processing {url}: {str(e)}")
+        return False
+
+
+def print_summary_and_exit(
+        success: bool,
+        results: Dict[str, List[str]],
+        execution_time: float
+):
+    """
+    Print a summary of the download results and execution time, then exit the script.
+
+    Args:
+        success (bool): Overall success status of the downloads.
+        results (Dict[str, List[str]]): Dictionary containing lists of successful and failed downloads.
+        execution_time (float): Total execution time of the script.
+    """
+    total_downloads = len(results['success']) + len(results['failure'])
+    if not total_downloads:
+        sys.exit(1)
+
+    print("\nDownload Summary")
+    print("-" * 16)
+
+    print(f"Total repositories: {total_downloads}")
+    print(f"Successful: {len(results['success'])}")
+    print(f"Failed: {len(results['failure'])}")
+    print(f"Execution time: {execution_time:.2f} seconds")
+
+    if results['success']:
+        print("\nSuccessful downloads:")
+        for url in results['success']:
+            print(f"  ✓ {url}")
+
+    if results['failure']:
+        print("\nFailed downloads:")
+        for url in results['failure']:
+            print(f"  ✗ {url}")
+
+    if success:
+        print("\nAll downloads completed successfully.")
+    elif total_downloads == 1:
+        print("\nThe download failed. Please check the error messages above for details.")
+    else:
+        print("\nSome downloads failed. Please check the error messages above for details.")
+
+    sys.exit(0 if success else 1)
+
+
 def main():
     """
     Main function to handle command-line arguments and orchestrate the download process.
@@ -614,8 +827,15 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
 
     # Command-line Arguments
+
+    # Use a positional argument for URL, but make it optional
     parser.add_argument("url",
+                        nargs='?',
                         help="URL or ID of the Hugging Face repository")
+    parser.add_argument("--url-file",
+                        help="File containing URLs of Hugging Face repositories")
+
+    # Other arguments
     parser.add_argument("-o", "--output",
                         help="Output directory (default: script directory)")
     parser.add_argument("--use-auth-token",
@@ -645,54 +865,27 @@ def main():
     # Initialize `HfApi` and import `hf_hub_download` based on whether fast transfer mode is used
     initialize_huggingface_hub(args.fast)
 
+    # Validate and process URLs
+    urls, results = validate_and_process_urls(args, parser)
+    if not urls:
+        return False, results
+
     use_auth_token = HfFolder.get_token() if args.use_auth_token else None
-
-    # Extract directory format, infer repository type, and get revision
-    repo_id, formatted_repo_id, repo_type, revision = process_repo_info(args.url, args.revision, use_auth_token)
-
-    # Use script directory as default if no output directory is specified
-    output_dir = set_output_directory(args.output, formatted_repo_id)
-
-    logger.info(f"Downloading repository: {repo_id}")
-    logger.info(f"Revision: {args.revision}")
 
     ignore_patterns = read_ignore_file(args.ignore_file)
     if ignore_patterns:
         logger.info(f"Using ignore patterns from {args.ignore_file}")
 
-    # Generate the metadata file path
-    metadata_file = get_metadata_file(output_dir, formatted_repo_id)
+    for url in urls:
+        download_success = process_single_repository(url, args, use_auth_token, ignore_patterns)
+        results['success' if download_success else 'failure'].append(url)
 
-    # Main download function
-    try:
-        download_repo(
-            repo_id,
-            repo_type,
-            output_dir,
-            metadata_file,
-            use_auth_token,
-            args.revision,
-            args.force,
-            ignore_patterns
-        )
-        return True
-    except KeyboardInterrupt:
-        logger.warning("Download interrupted by user.")
-        return False
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {str(e)}")
-        return False
+    return len(results['failure']) == 0, results
 
 
 if __name__ == "__main__":
     start_time = time.time()
-    success = main()
-    end_time = time.time()
-    execution_time = end_time - start_time
+    success_main, results_main = main()
+    execution_time_main = time.time() - start_time
 
-    if success:
-        logger.info(f"Download completed successfully in {execution_time:.2f} seconds.")
-        sys.exit(0)
-    else:
-        logger.error(f"Download failed. Total execution time: {execution_time:.2f} seconds.")
-        sys.exit(1)
+    print_summary_and_exit(success_main, results_main, execution_time_main)
