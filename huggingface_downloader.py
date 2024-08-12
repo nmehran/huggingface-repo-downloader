@@ -468,7 +468,10 @@ def get_metadata_file(output_dir: str, formatted_repo_id: str) -> str:
     Returns:
         str: The full path to the metadata file.
     """
-    return os.path.join(output_dir, f"{formatted_repo_id}_metadata.json")
+    cache_directory = os.path.join(output_dir, ".cache", "huggingface_downloader")
+    os.makedirs(cache_directory, exist_ok=True)
+
+    return os.path.join(cache_directory, f"{formatted_repo_id}_metadata.json")
 
 
 def set_output_directory(specified_output: Optional[str], formatted_repo_id: str) -> str:
