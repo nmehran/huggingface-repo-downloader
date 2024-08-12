@@ -37,6 +37,7 @@ python huggingface_downloader.py <repository_url> [options]
 - `--revision`: Specific revision to download (default: main)
 - `--fast`: Enable fast transfer mode (requires `hf_transfer` package)
 - `--ignore-file`: Specify a file containing glob patterns to ignore
+- `--force`: Force re-download of all files, ignoring existing metadata
 - `--help`: Show help message and exit
 - `--auth-help`: Show instructions for setting up authentication
 
@@ -67,6 +68,11 @@ python huggingface_downloader.py <repository_url> [options]
    python huggingface_downloader.py meta-llama/Meta-Llama-3.1-8B-Instruct --ignore-file .hfignore
    ```
 
+6. Force re-download of all files:
+   ```
+   python huggingface_downloader.py meta-llama/Meta-Llama-3.1-8B-Instruct --force
+   ```
+   
 ## Fast Transfer Mode
 
 The `--fast` flag enables fast transfer mode, which can significantly increase download speeds on high-bandwidth connections. However, it's important to note:
@@ -99,6 +105,15 @@ This would ignore all `.txt` files, everything in the `test_data` directory, and
 Note:
 - Lines starting with `#` (including those with leading whitespace) are treated as comments and ignored.
 - Empty lines are skipped.
+
+## Metadata Handling
+
+The script uses metadata to keep track of downloaded files and their versions. This helps to avoid unnecessary re-downloads of unchanged files. The metadata is stored in a JSON file in the output directory.
+
+When you run the script:
+- It compares the current repository metadata with the stored metadata.
+- Only files that are new or have changed since the last download are downloaded.
+- The `--force` option overrides this behavior and re-downloads all files.
 
 ## Authentication
 
