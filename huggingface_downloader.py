@@ -75,7 +75,6 @@ from tqdm import tqdm
 from typing import Tuple, List, Dict, Optional
 from urllib.parse import urlparse
 
-
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -98,10 +97,11 @@ def import_huggingface_hub(use_fast: bool):
         # Set the environment variable to enable fast transfer mode, prior to importing huggingface_hub
         os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
 
-    global HfApi, HfFolder, RepoFile, hf_hub_download
+    global HfApi, HfFolder, hf_hub_download
+    global DatasetInfo, ModelInfo, SpaceInfo, RepoFile
     global EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError, HfHubHTTPError
     from huggingface_hub import hf_hub_download, HfApi, HfFolder
-    from huggingface_hub.hf_api import RepoFile
+    from huggingface_hub.hf_api import DatasetInfo, ModelInfo, SpaceInfo, RepoFile
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError, HfHubHTTPError
 
 
@@ -210,6 +210,7 @@ def read_ignore_file(ignore_file: Optional[str]) -> List[str]:
 
 def get_repo_info(
         repo_id: str,
+        repo_type: str,
         revision: Optional[str] = None,
         use_auth_token: Optional[str] = None
 ) -> Tuple[bool, str]:
@@ -218,35 +219,34 @@ def get_repo_info(
 
     Args:
         repo_id (str): The ID of the repository.
+        repo_type (str): The type of the repository (e.g., "model", "dataset", "space").
         revision (Optional[str]): The specific revision to query (default: None).
         use_auth_token (Optional[str]): The authentication token to use (default: None).
 
     Returns:
         Tuple[bool, str]: A tuple containing a boolean indicating success and a string with the repo type or error message.
     """
-    try:
-        # Get repository information
-        repo_info = api.repo_info(repo_id, revision=revision, token=use_auth_token)
+    if repo_type is None:
+        # Try model first, then dataset if not found
+        repo_types_to_try = ["model", "dataset", "space"]
+    else:
+        repo_types_to_try = [repo_type]
 
-        # Determine the repository type based on available attributes
-        if repo_info.pipeline_tag is not None:
-            repo_type = "models"
-        elif "dataset_infos.json" in [file.rfilename for file in repo_info.siblings]:
-            repo_type = "datasets"
-        elif "app.py" in [file.rfilename for file in repo_info.siblings]:
-            repo_type = "spaces"
-        else:
-            repo_type = "unknown"
+    for rt in repo_types_to_try:
+        try:
+            repo_info = api.repo_info(repo_id, repo_type=rt, revision=revision, token=use_auth_token)
+            if isinstance(repo_info, (DatasetInfo, ModelInfo, SpaceInfo)):
+                return True, rt
+        except RepositoryNotFoundError:
+            continue
+        except RevisionNotFoundError:
+            return False, f"Revision `{revision}` not found"
+        except HfHubHTTPError as e:
+            return False, f"HTTP error: {str(e)}"
+        except Exception as e:
+            return False, f"An unexpected error occurred: {str(e)}"
 
-        return True, repo_type
-    except RepositoryNotFoundError:
-        return False, f"Repository `{repo_id}` not found"
-    except RevisionNotFoundError:
-        return False, f"Revision `{revision}` not found"
-    except HfHubHTTPError as e:
-        return False, f"HTTP error: {str(e)}"
-    except Exception as e:
-        return False, f"An unexpected error occurred: {str(e)}"
+    return False, f"Repository `{repo_id}` not found or not a valid model or dataset"
 
 
 def process_repo_info(
@@ -269,7 +269,7 @@ def process_repo_info(
         SystemExit: If the repository is invalid or inaccessible.
     """
     try:
-        repo_id, url_revision = parse_repo_id(url)
+        repo_id, repo_type, url_revision = parse_repo_id(url)
     except ValueError as e:
         logger.error(str(e))
         sys.exit(1)
@@ -278,7 +278,7 @@ def process_repo_info(
     revision = cli_revision or url_revision or "main"
 
     # Validate the repository
-    is_valid, repo_type = get_repo_info(repo_id, revision=revision, use_auth_token=use_auth_token)
+    is_valid, repo_type = get_repo_info(repo_id, repo_type, revision=revision, use_auth_token=use_auth_token)
     if not is_valid:
         logger.error(f"Invalid or inaccessible repository: {repo_id}")
         sys.exit(1)
@@ -291,15 +291,15 @@ def process_repo_info(
     return repo_id, formatted_repo_id, repo_type, revision
 
 
-def parse_repo_id(url: str) -> Tuple[str, Optional[str]]:
+def parse_repo_id(url: str) -> Tuple[str, Optional[str], str]:
     """
-    Parse a Hugging Face repository URL or ID to extract the repository ID and revision.
+    Parse a Hugging Face repository URL or ID to extract the repository ID, revision, and type.
 
     Args:
         url (str): The URL or ID of the Hugging Face repository.
 
     Returns:
-        Tuple[str, Optional[str]]: A tuple containing the repository ID and revision (if specified).
+        Tuple[str, Optional[str], str]: A tuple containing the repository ID, revision (if specified), and repository type.
 
     Raises:
         ValueError: If the repository format is invalid.
@@ -317,19 +317,36 @@ def parse_repo_id(url: str) -> Tuple[str, Optional[str]]:
 
     parts = path.split('/')
 
+    # Determine repo_type based on URL structure
     if len(parts) > 2:
-        raise ValueError("Invalid repository format. Please use 'owner/repo-name' format.")
+        repo_type = parts[0]
+        repo_id = '/'.join(parts[1:])
+    else:
+        repo_type = None
+        repo_id = '/'.join(parts)
 
-    repo_id = '/'.join(parts)
-    return repo_id, revision
+    # Map repository types
+    repo_type_mapping = {
+        "datasets": "dataset",
+        "models": "model",
+        "spaces": "space"
+    }
+
+    if repo_type is not None:
+        repo_type = repo_type_mapping.get(repo_type)
+        if repo_type is None:
+            raise ValueError(f"Unsupported repository type: {parts[0]}. Must be one of 'models', 'datasets', or 'spaces'")
+
+    return repo_id, repo_type, revision
 
 
-def get_repo_tree_metadata(repo_id: str, revision: str, use_auth_token: Optional[str]) -> Optional[Dict[str, Dict]]:
+def get_repo_tree_metadata(repo_id: str, repo_type: str, revision: str, use_auth_token: Optional[str]) -> Optional[Dict[str, Dict]]:
     """
     Fetch metadata for all files in a Hugging Face repository.
 
     Args:
         repo_id (str): The ID of the repository.
+        repo_type (str): The type of the repository (e.g., "model", "dataset", "space").
         revision (str): The specific revision to fetch metadata for.
         use_auth_token (Optional[str]): The authentication token to use.
 
@@ -339,7 +356,11 @@ def get_repo_tree_metadata(repo_id: str, revision: str, use_auth_token: Optional
     """
     file_metadata = {}
     try:
-        for item in api.list_repo_tree(repo_id, recursive=True, revision=revision, token=use_auth_token):
+        for item in api.list_repo_tree(repo_id=repo_id,
+                                       repo_type=repo_type,
+                                       revision=revision,
+                                       recursive=True,
+                                       token=use_auth_token):
             if isinstance(item, RepoFile):
                 file_metadata[item.path] = {
                     'size': getattr(item, 'size', None),
@@ -478,6 +499,7 @@ def set_output_directory(specified_output: Optional[str], formatted_repo_id: str
 
 def download_file(
         repo_id: str,
+        repo_type: str,
         filename: str,
         output_dir: str,
         use_auth_token: Optional[str],
@@ -488,6 +510,7 @@ def download_file(
 
     Args:
         repo_id (str): The ID of the repository.
+        repo_type (str): The type of the repository (e.g., "model", "dataset", "space").
         filename (str): The name of the file to download.
         output_dir (str): The directory to save the downloaded file.
         use_auth_token (Optional[str]): The authentication token to use.
@@ -503,28 +526,15 @@ def download_file(
     try:
         return hf_hub_download(
             repo_id=repo_id,
+            repo_type=repo_type,
             filename=filename,
             revision=revision,
             local_dir=output_dir,
-            local_dir_use_symlinks=False,
             force_download=True,
-            resume_download=True,
             token=use_auth_token
         )
     except Exception as e:
-        if "416 Client Error: Requested Range Not Satisfiable" in str(e):
-            logger.warning(f"Resume download failed for {filename}. Attempting full download.")
-            return hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                revision=revision,
-                local_dir=output_dir,
-                local_dir_use_symlinks=False,
-                force_download=True,
-                resume_download=False,
-                token=use_auth_token
-            )
-        elif "401 Client Error" in str(e) and "Cannot access gated repo" in str(e):
+        if "401 Client Error" in str(e) and "Cannot access gated repo" in str(e):
             logger.error("Error: Cannot access gated repository. "
                          "Use --auth-help for instructions on setting up authentication.")
             logger.error("If you have already set up authentication, make sure you're using the --use-auth-token flag.")
@@ -557,7 +567,7 @@ def download_repo(
         ignore_patterns (Optional[List[str]]): A list of glob patterns for files to ignore.
     """
     stored_metadata = load_stored_metadata(metadata_file)
-    current_metadata = get_repo_tree_metadata(repo_id, revision, use_auth_token)
+    current_metadata = get_repo_tree_metadata(repo_id, repo_type, revision, use_auth_token)
 
     if current_metadata is None:
         logger.error("Failed to fetch repository metadata. Aborting download.")
@@ -577,13 +587,13 @@ def download_repo(
             logger.info(f"Skipping ignored file: {file}")
             continue
         try:
-            local_file = download_file(repo_id, file, output_dir, use_auth_token, revision)
+            local_file = download_file(repo_id, repo_type, file, output_dir, use_auth_token, revision)
             logger.info(f"Downloaded: {local_file}")
         except Exception as e:
             logger.error(f"Error downloading {file}: {str(e)}")
             logger.info("Retrying download...")
             try:
-                local_file = download_file(repo_id, file, output_dir, use_auth_token, revision)
+                local_file = download_file(repo_id, repo_type, file, output_dir, use_auth_token, revision)
                 logger.info(f"Successfully downloaded on retry: {local_file}")
             except Exception as e:
                 logger.error(f"Failed to download {file} after retry: {str(e)}")
