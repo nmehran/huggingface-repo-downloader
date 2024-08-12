@@ -32,6 +32,7 @@ Options:
     --revision           Specific revision to download (default: main)
     --fast               Enable fast transfer mode (requires hf_transfer package)
     --auth-help          Show instructions for setting up authentication
+    --ignore-file        Specify a file containing glob patterns to ignore
     --help               Show this help message and exit
 
 Fast Transfer Mode:
@@ -62,7 +63,7 @@ import re
 import sys
 import time
 from urllib.parse import urlparse
-
+from fnmatch import fnmatch
 from tqdm import tqdm
 
 # Configure logging
@@ -140,6 +141,21 @@ def is_fast_transfer_enabled():
         return True
     except ImportError:
         return False
+
+
+def should_ignore_file(file, ignore_patterns):
+    return any(fnmatch(file, pattern) for pattern in ignore_patterns)
+
+
+def read_ignore_file(ignore_file):
+    if not ignore_file:
+        return []
+    try:
+        with open(ignore_file, 'r') as f:
+            return [line for line in f if (stripped := line.strip()) and not stripped.startswith('#')]
+    except IOError as e:
+        logger.error(f"Error reading ignore file {ignore_file}: {str(e)}")
+        return []
 
 
 def get_repo_info(repo_id, revision=None, use_auth_token=None):
@@ -242,7 +258,7 @@ def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"
             raise
 
 
-def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revision="main"):
+def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revision="main", ignore_patterns=None):
 
     try:
         files = api.list_repo_files(repo_id, revision=revision, token=use_auth_token)
@@ -251,6 +267,9 @@ def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revi
         return
 
     for file in tqdm(files, desc=f"Downloading {repo_type} files (revision: {revision})", unit="file"):
+        if ignore_patterns and should_ignore_file(file, ignore_patterns):
+            logger.info(f"Skipping ignored file: {file}")
+            continue
         try:
             local_file = download_file(repo_id, file, output_dir, use_auth_token, revision)
             logger.info(f"Downloaded: {local_file}")
@@ -274,6 +293,7 @@ def main():
     parser.add_argument("--revision", default="main", help="Specific revision to download (default: main)")
     parser.add_argument("--auth-help", action="store_true", help="Show instructions for setting up authentication")
     parser.add_argument("--fast", action="store_true", help="Enable fast transfer mode using hf_transfer (if installed)")
+    parser.add_argument("--ignore-file", help="Specify a file containing glob patterns to ignore")
     args = parser.parse_args()
 
     initialize_huggingface_hub(args.fast)
@@ -299,8 +319,12 @@ def main():
     logger.info(f"Revision: {args.revision}")
     logger.info(f"Output directory: {output_dir}")
 
+    ignore_patterns = read_ignore_file(args.ignore_file)
+    if ignore_patterns:
+        logger.info(f"Using ignore patterns from {args.ignore_file}")
+
     try:
-        download_repo(repo_id, repo_type, output_dir, use_auth_token, args.revision)
+        download_repo(repo_id, repo_type, output_dir, use_auth_token, args.revision, ignore_patterns)
         logger.info(f"Download completed. Files are stored in: {output_dir}")
     except KeyboardInterrupt:
         logger.info("Download interrupted by user. Exiting...")

@@ -9,6 +9,7 @@ This Python script allows you to download repositories from Hugging Face, includ
 - Resume interrupted downloads
 - Skip already downloaded files
 - Optional fast transfer mode for high-bandwidth connections
+- Ignore specific files or patterns using glob syntax
 
 ## Installation
 
@@ -35,8 +36,9 @@ python huggingface_downloader.py <repository_url> [options]
 - `--use-auth-token`: Use the Hugging Face auth token for private or access-restricted repos
 - `--revision`: Specific revision to download (default: main)
 - `--fast`: Enable fast transfer mode (requires `hf_transfer` package)
-- `--auth-help`: Show instructions for setting up authentication
+- `--ignore-file`: Specify a file containing glob patterns to ignore
 - `--help`: Show help message and exit
+- `--auth-help`: Show instructions for setting up authentication
 
 ### Examples
 
@@ -60,6 +62,11 @@ python huggingface_downloader.py <repository_url> [options]
    python huggingface_downloader.py google/t5-v1_1-large --fast
    ```
 
+5. Use an ignore file to skip certain files or patterns:
+   ```
+   python huggingface_downloader.py meta-llama/Meta-Llama-3.1-8B-Instruct --ignore-file .hfignore
+   ```
+
 ## Fast Transfer Mode
 
 The `--fast` flag enables fast transfer mode, which can significantly increase download speeds on high-bandwidth connections. However, it's important to note:
@@ -70,6 +77,28 @@ The `--fast` flag enables fast transfer mode, which can significantly increase d
 4. It is not applicable to most users, even at most higher-speed internet connections.
 
 By default, fast transfer mode is disabled to ensure a more user-friendly experience with progress bars and compatibility across different network conditions.
+
+## Ignore File
+
+You can use an ignore file to specify patterns of files or directories that should be skipped during the download. The ignore file uses glob syntax for pattern matching.
+
+To use an ignore file:
+
+1. Create a text file (e.g., `.hfignore`) with one pattern per line.
+2. Use the `--ignore-file` option when running the script, pointing to your ignore file.
+
+Example `.hfignore` file content:
+```
+*.txt
+test_data/*
+logs/
+```
+
+This would ignore all `.txt` files, everything in the `test_data` directory, and the `logs` directory.
+
+Note:
+- Lines starting with `#` (including those with leading whitespace) are treated as comments and ignored.
+- Empty lines are skipped.
 
 ## Authentication
 
