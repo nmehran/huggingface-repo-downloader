@@ -62,38 +62,50 @@ import logging
 import re
 import sys
 import time
+from typing import Tuple, List, Optional
 from urllib.parse import urlparse
 from fnmatch import fnmatch
 from tqdm import tqdm
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Global HfApi instance
-api = None
+api: Optional['HfApi'] = None
 
 
-def import_huggingface_hub():
+def import_huggingface_hub(use_fast: bool):
+    """
+    Import necessary modules and functions from huggingface_hub.
+
+    This function imports required classes and functions from the huggingface_hub library
+    and makes them available globally, after fast transfer is set.
+
+    Args:
+        use_fast (bool): Whether to enable fast transfer mode.
+    """
+    if use_fast:
+        # Set the environment variable to enable fast transfer mode, prior to importing huggingface_hub
+        os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
+
     global HfApi, HfFolder, hf_hub_url, hf_hub_download
     global EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError, HfHubHTTPError
     from huggingface_hub import hf_hub_url, hf_hub_download, HfApi, HfFolder
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError, HfHubHTTPError
 
 
-def enable_fast_transfer():
-    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
-    # Reload necessary modules
-    importlib.reload(importlib.import_module('huggingface_hub'))
+def initialize_huggingface_hub(use_fast: bool):
+    """
+    Initialize the Hugging Face Hub API and set up fast transfer mode if requested.
 
-
-def initialize_huggingface_hub(use_fast):
+    Args:
+        use_fast (bool): Whether to enable fast transfer mode.
+    """
     global api
 
-    if use_fast:
-        enable_fast_transfer()
-
-    import_huggingface_hub()
+    import_huggingface_hub(use_fast)
 
     api = HfApi()
 
@@ -101,14 +113,20 @@ def initialize_huggingface_hub(use_fast):
     if fast_transfer_enabled:
         logger.info("Fast transfer mode is enabled and active")
     elif use_fast:
-        logger.warning("Fast transfer mode was requested but 'hf_transfer' is not installed. Falling back to standard transfer.")
+        logger.warning("Fast transfer mode was requested but 'hf_transfer' is not installed. "
+                       "Falling back to standard transfer.")
     else:
-        logger.info("Fast transfer mode is not enabled. Use --fast flag and install 'hf_transfer' for faster downloads.")
-
-    return
+        logger.info("Fast transfer mode is not enabled. "
+                    "Use --fast flag and install 'hf_transfer' if available bandwidth is greater than 500MB/s.")
 
 
 def print_auth_instructions():
+    """
+    Print instructions for setting up authentication with Hugging Face.
+
+    This function displays step-by-step instructions for generating and configuring
+    a Hugging Face authentication token.
+    """
     instructions = """
 To set up authentication for Hugging Face:
 
@@ -131,8 +149,13 @@ Note: Your token is stored at ${HOME}/.cache/huggingface/token
     print(instructions.strip())
 
 
-def is_fast_transfer_enabled():
-    """Check if fast transfer mode is enabled."""
+def is_fast_transfer_enabled() -> bool:
+    """
+    Check if fast transfer mode is enabled.
+
+    Returns:
+        bool: True if fast transfer mode is enabled and the hf_transfer module is installed, False otherwise.
+    """
     if os.environ.get('HF_HUB_ENABLE_HF_TRANSFER') != '1':
         return False
 
@@ -143,11 +166,30 @@ def is_fast_transfer_enabled():
         return False
 
 
-def should_ignore_file(file, ignore_patterns):
+def should_ignore_file(file: str, ignore_patterns: List[str]) -> bool:
+    """
+    Check if a file should be ignored based on the given ignore patterns.
+
+    Args:
+        file (str): The name of the file to check.
+        ignore_patterns (List[str]): A list of glob patterns to match against.
+
+    Returns:
+        bool: True if the file should be ignored, False otherwise.
+    """
     return any(fnmatch(file, pattern) for pattern in ignore_patterns)
 
 
-def read_ignore_file(ignore_file):
+def read_ignore_file(ignore_file: Optional[str]) -> List[str]:
+    """
+    Read and parse an ignore file, returning a list of ignore patterns.
+
+    Args:
+        ignore_file (Optional[str]): The path to the ignore file.
+
+    Returns:
+        List[str]: A list of ignore patterns, or an empty list if the file doesn't exist or is empty.
+    """
     if not ignore_file:
         return []
     try:
@@ -158,7 +200,22 @@ def read_ignore_file(ignore_file):
         return []
 
 
-def get_repo_info(repo_id, revision=None, use_auth_token=None):
+def get_repo_info(
+        repo_id: str,
+        revision: Optional[str] = None,
+        use_auth_token: Optional[str] = None
+) -> Tuple[bool, str]:
+    """
+    Retrieve information about a Hugging Face repository.
+
+    Args:
+        repo_id (str): The ID of the repository.
+        revision (Optional[str]): The specific revision to query (default: None).
+        use_auth_token (Optional[str]): The authentication token to use (default: None).
+
+    Returns:
+        Tuple[bool, str]: A tuple containing a boolean indicating success and a string with the repo type or error message.
+    """
     try:
         # Get repository information
         repo_info = api.repo_info(repo_id, revision=revision, token=use_auth_token)
@@ -174,16 +231,35 @@ def get_repo_info(repo_id, revision=None, use_auth_token=None):
             repo_type = "unknown"
 
         return True, repo_type
-
     except RepositoryNotFoundError:
-        return False, "Repository not found"
+        return False, f"Repository `{repo_id}` not found"
+    except RevisionNotFoundError:
+        return False, f"Revision `{revision}` not found"
     except HfHubHTTPError as e:
         return False, f"HTTP error: {str(e)}"
     except Exception as e:
         return False, f"An unexpected error occurred: {str(e)}"
 
 
-def process_repo_info(url, cli_revision, use_auth_token):
+def process_repo_info(
+        url: str,
+        cli_revision: Optional[str],
+        use_auth_token: Optional[str]
+) -> Tuple[str, str, str, str]:
+    """
+    Process repository information and validate the repository.
+
+    Args:
+        url (str): The URL or ID of the Hugging Face repository.
+        cli_revision (Optional[str]): The revision specified in the CLI arguments.
+        use_auth_token (Optional[str]): The authentication token to use.
+
+    Returns:
+        Tuple[str, str, str, str]: A tuple containing the repository ID, formatted repository ID, repository type, and revision.
+
+    Raises:
+        SystemExit: If the repository is invalid or inaccessible.
+    """
     try:
         repo_id, url_revision = parse_repo_id(url)
     except ValueError as e:
@@ -204,7 +280,19 @@ def process_repo_info(url, cli_revision, use_auth_token):
     return repo_id, formatted_repo_id, repo_type, revision
 
 
-def parse_repo_id(url):
+def parse_repo_id(url: str) -> Tuple[str, Optional[str]]:
+    """
+    Parse a Hugging Face repository URL or ID to extract the repository ID and revision.
+
+    Args:
+        url (str): The URL or ID of the Hugging Face repository.
+
+    Returns:
+        Tuple[str, Optional[str]]: A tuple containing the repository ID and revision (if specified).
+
+    Raises:
+        ValueError: If the repository format is invalid.
+    """
     parsed = urlparse(url)
     path = parsed.path.strip("/")
     path = re.sub(r'^huggingface\.co/', '', path)
@@ -225,7 +313,30 @@ def parse_repo_id(url):
     return repo_id, revision
 
 
-def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"):
+def download_file(
+        repo_id: str,
+        filename: str,
+        output_dir: str,
+        use_auth_token: Optional[str],
+        revision: str = "main"
+) -> str:
+    """
+    Download a single file from a Hugging Face repository.
+
+    Args:
+        repo_id (str): The ID of the repository.
+        filename (str): The name of the file to download.
+        output_dir (str): The directory to save the downloaded file.
+        use_auth_token (Optional[str]): The authentication token to use.
+        revision (str): The specific revision to download from (default: "main").
+
+    Returns:
+        str: The path to the downloaded file.
+
+    Raises:
+        SystemExit: If authentication fails.
+        Exception: For other download errors.
+    """
     try:
         return hf_hub_download(
             repo_id=repo_id,
@@ -251,15 +362,33 @@ def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"
                 token=use_auth_token
             )
         elif "401 Client Error" in str(e) and "Cannot access gated repo" in str(e):
-            logger.error(f"Error: Cannot access gated repository. Use --auth-help for instructions on setting up authentication.")
-            logger.error(f"If you have already set up authentication, make sure you're using the --use-auth-token flag.")
+            logger.error("Error: Cannot access gated repository. "
+                         "Use --auth-help for instructions on setting up authentication.")
+            logger.error("If you have already set up authentication, make sure you're using the --use-auth-token flag.")
             sys.exit(1)
         else:
             raise
 
 
-def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revision="main", ignore_patterns=None):
+def download_repo(
+        repo_id: str,
+        repo_type: str,
+        output_dir: Optional[str] = None,
+        use_auth_token: Optional[str] = None,
+        revision: str = "main",
+        ignore_patterns: Optional[List[str]] = None
+):
+    """
+    Download all files from a Hugging Face repository.
 
+    Args:
+        repo_id (str): The ID of the repository.
+        repo_type (str): The type of the repository (e.g., "models", "datasets", "spaces").
+        output_dir (Optional[str]): The directory to save the downloaded files (default: None).
+        use_auth_token (Optional[str]): The authentication token to use (default: None).
+        revision (str): The specific revision to download from (default: "main").
+        ignore_patterns (Optional[List[str]]): A list of glob patterns for files to ignore (default: None).
+    """
     try:
         files = api.list_repo_files(repo_id, revision=revision, token=use_auth_token)
     except Exception as e:
@@ -284,26 +413,44 @@ def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revi
 
 
 def main():
+    """
+    Main function to handle command-line arguments and orchestrate the download process.
+    """
     parser = argparse.ArgumentParser(description="Download files from Hugging Face.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("url", help="URL or ID of the Hugging Face repository")
-    parser.add_argument("-o", "--output", help="Output directory (default: script directory)")
-    parser.add_argument("--use-auth-token", action="store_true",
-                        help="Use the Hugging Face auth token for private repos")
-    parser.add_argument("--revision", default="main", help="Specific revision to download (default: main)")
-    parser.add_argument("--auth-help", action="store_true", help="Show instructions for setting up authentication")
-    parser.add_argument("--fast", action="store_true", help="Enable fast transfer mode using hf_transfer (if installed)")
-    parser.add_argument("--ignore-file", help="Specify a file containing glob patterns to ignore")
-    args = parser.parse_args()
 
-    initialize_huggingface_hub(args.fast)
+    # Command-line Parameters
+    parser.add_argument("url",
+                        help="URL or ID of the Hugging Face repository")
+    parser.add_argument("-o", "--output",
+                        help="Output directory (default: script directory)")
+    parser.add_argument("--use-auth-token",
+                        action="store_true",
+                        help="Use the Hugging Face auth token for private repos")
+    parser.add_argument("--revision",
+                        default="main",
+                        help="Specific revision to download (default: main)")
+    parser.add_argument("--auth-help",
+                        action="store_true",
+                        help="Show instructions for setting up authentication")
+    parser.add_argument("--fast",
+                        action="store_true",
+                        help="Enable fast transfer mode using hf_transfer (if installed)")
+    parser.add_argument("--ignore-file",
+                        help="Specify a file containing glob patterns to ignore")
+
+    args = parser.parse_args()
 
     if args.auth_help:
         print_auth_instructions()
         sys.exit(0)
 
+    # Initialize `HfApi` and import `hf_hub_download` based on whether fast transfer mode is used
+    initialize_huggingface_hub(args.fast)
+
     use_auth_token = HfFolder.get_token() if args.use_auth_token else None
 
+    # Extract directory format, infer repository type, and get revision
     repo_id, formatted_repo_id, repo_type, revision = process_repo_info(args.url, args.revision, use_auth_token)
 
     # Use script directory as default if no output directory is specified
@@ -323,6 +470,7 @@ def main():
     if ignore_patterns:
         logger.info(f"Using ignore patterns from {args.ignore_file}")
 
+    # Main download function
     try:
         download_repo(repo_id, repo_type, output_dir, use_auth_token, args.revision, ignore_patterns)
         logger.info(f"Download completed. Files are stored in: {output_dir}")
