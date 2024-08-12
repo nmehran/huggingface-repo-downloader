@@ -79,6 +79,7 @@ def import_huggingface_hub():
     from huggingface_hub import hf_hub_url, hf_hub_download, HfApi, HfFolder
     from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError, HfHubHTTPError
 
+
 def enable_fast_transfer():
     os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
     # Reload necessary modules
@@ -92,6 +93,7 @@ def initialize_huggingface_hub(use_fast):
         enable_fast_transfer()
 
     import_huggingface_hub()
+
     api = HfApi()
 
     fast_transfer_enabled = is_fast_transfer_enabled()
@@ -165,23 +167,46 @@ def get_repo_info(repo_id, revision=None, use_auth_token=None):
         return False, f"An unexpected error occurred: {str(e)}"
 
 
-def parse_repo_id(url, use_auth_token=None):
+def process_repo_info(url, cli_revision, use_auth_token):
+    try:
+        repo_id, url_revision = parse_repo_id(url)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
+
+    # Use CLI revision if provided, otherwise use URL revision, fallback to 'main'
+    revision = cli_revision or url_revision or "main"
+
+    # Validate the repository
+    is_valid, repo_type = get_repo_info(repo_id, revision=revision, use_auth_token=use_auth_token)
+    if not is_valid:
+        logger.error(f"Invalid or inaccessible repository: {repo_id}")
+        sys.exit(1)
+
+    formatted_repo_id = f"{repo_type}--{repo_id.replace('/', '--')}"
+
+    return repo_id, formatted_repo_id, repo_type, revision
+
+
+def parse_repo_id(url):
     parsed = urlparse(url)
     path = parsed.path.strip("/")
     path = re.sub(r'^huggingface\.co/', '', path)
-    path = re.sub(r'/tree/[^/]+$', '', path)
+
+    # Extract revision if present
+    revision = None
+    tree_match = re.search(r'/tree/([^/]+)$', path)
+    if tree_match:
+        revision = tree_match.group(1)
+        path = re.sub(r'/tree/[^/]+$', '', path)
+
     parts = path.split('/')
 
     if len(parts) > 2:
         raise ValueError("Invalid repository format. Please use 'owner/repo-name' format.")
 
     repo_id = '/'.join(parts)
-    is_valid, repo_type = get_repo_info(repo_id, use_auth_token=use_auth_token)
-
-    if not is_valid:
-        raise ValueError(f"Invalid or inaccessible repository: {repo_id}")
-
-    return f"{repo_type}--{repo_id.replace('/', '--')}"
+    return repo_id, revision
 
 
 def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"):
@@ -217,27 +242,23 @@ def download_file(repo_id, filename, output_dir, use_auth_token, revision="main"
             raise
 
 
-def download_repo(repo_id, output_dir=None, use_auth_token=None, revision="main"):
-    # Extract the original repo name and type from our custom format
-    repo_parts = repo_id.split('--')
-    repo_type = repo_parts[0]
-    original_repo_id = '--'.join(repo_parts[1:]).replace('--', '/')
+def download_repo(repo_id, repo_type, output_dir=None, use_auth_token=None, revision="main"):
 
     try:
-        files = api.list_repo_files(original_repo_id, revision=revision, token=use_auth_token)
+        files = api.list_repo_files(repo_id, revision=revision, token=use_auth_token)
     except Exception as e:
-        logger.error(f"Error listing files in repository {original_repo_id} at revision {revision}: {str(e)}")
+        logger.error(f"Error listing files in repository {repo_id} at revision {revision}: {str(e)}")
         return
 
     for file in tqdm(files, desc=f"Downloading {repo_type} files (revision: {revision})", unit="file"):
         try:
-            local_file = download_file(original_repo_id, file, output_dir, use_auth_token, revision)
+            local_file = download_file(repo_id, file, output_dir, use_auth_token, revision)
             logger.info(f"Downloaded: {local_file}")
         except Exception as e:
             logger.error(f"Error downloading {file}: {str(e)}")
             logger.info("Retrying download...")
             try:
-                local_file = download_file(original_repo_id, file, output_dir, use_auth_token, revision)
+                local_file = download_file(repo_id, file, output_dir, use_auth_token, revision)
                 logger.info(f"Successfully downloaded on retry: {local_file}")
             except Exception as e:
                 logger.error(f"Failed to download {file} after retry: {str(e)}")
@@ -263,11 +284,7 @@ def main():
 
     use_auth_token = HfFolder.get_token() if args.use_auth_token else None
 
-    try:
-        repo_id = parse_repo_id(args.url, use_auth_token)
-    except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
+    repo_id, formatted_repo_id, repo_type, revision = process_repo_info(args.url, args.revision, use_auth_token)
 
     # Use script directory as default if no output directory is specified
     if args.output:
@@ -275,7 +292,7 @@ def main():
     else:
         base_output_dir = os.path.dirname(os.path.abspath(__file__))
 
-    output_dir = os.path.join(base_output_dir, repo_id)
+    output_dir = os.path.join(base_output_dir, formatted_repo_id)
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info(f"Downloading repository: {repo_id}")
@@ -283,7 +300,7 @@ def main():
     logger.info(f"Output directory: {output_dir}")
 
     try:
-        download_repo(repo_id, output_dir, use_auth_token, args.revision)
+        download_repo(repo_id, repo_type, output_dir, use_auth_token, args.revision)
         logger.info(f"Download completed. Files are stored in: {output_dir}")
     except KeyboardInterrupt:
         logger.info("Download interrupted by user. Exiting...")
