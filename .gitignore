@@ -120,6 +120,12 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Default local_dir layout from this downloader: {repo_type}--{org}--{name}[_revision]
+# e.g. model--org--name, dataset--org--name, space--org--name
+model--*/
+dataset--*/
+space--*/
+
 # IDE-specific
 # ------------
 # JetBrains

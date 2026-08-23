@@ -383,9 +383,40 @@ def get_file_hash(file_path):
     return sha256_hash.hexdigest()
 
 
+def file_is_complete(file_path: str, metadata: Dict, output_dir: str, verify_hash: bool = False) -> bool:
+    """
+    Check whether a local file exists and matches remote metadata.
+
+    Args:
+        file_path (str): Repository-relative file path.
+        metadata (Dict): Remote metadata for this file (size, optional lfs_sha256).
+        output_dir (str): Local output directory for the repository.
+        verify_hash (bool): If True and an LFS SHA256 is available, verify file contents.
+            Defaults to False so bulk post-download checks stay size-based (fast).
+
+    Returns:
+        bool: True if the local file is present and matches the expected size
+            (and hash when verify_hash is True).
+    """
+    full_path = os.path.join(output_dir, file_path)
+    if not os.path.exists(full_path):
+        return False
+
+    if os.path.getsize(full_path) != metadata.get('size'):
+        return False
+
+    if verify_hash and metadata.get('lfs_sha256'):
+        return get_file_hash(full_path) == metadata.get('lfs_sha256')
+
+    return True
+
+
 def should_download_file(file_path: str, current_metadata: Dict, stored_metadata: Dict, output_dir: str) -> bool:
     """
     Determine if a file should be downloaded based on its metadata and actual file size.
+
+    Disk state is authoritative: a missing or wrong-sized file is always re-fetched,
+    even if a prior run incorrectly recorded it in metadata.
 
     Args:
         file_path (str): The path of the file.
@@ -396,28 +427,25 @@ def should_download_file(file_path: str, current_metadata: Dict, stored_metadata
     Returns:
         bool: True if the file should be downloaded, False otherwise.
     """
-    if file_path not in stored_metadata:
-        return True  # New file, should download
-
     current = current_metadata.get(file_path, {})
     stored = stored_metadata.get(file_path, {})
     full_path = os.path.join(output_dir, file_path)
 
-    if not os.path.exists(full_path):
-        return True  # File doesn't exist on disk, should download
+    # Cheap completeness check (existence + size). No download needed if this fails later
+    # only when hash/blob identity says the remote object changed.
+    if not file_is_complete(file_path, current, output_dir, verify_hash=False):
+        return True
 
-    actual_size = os.path.getsize(full_path)
-    if actual_size != current.get('size'):
-        return True  # File size on disk differs from current remote repository metadata, should download
-
-    # For LFS files, compare SHA256 hashes
     if current.get('lfs_sha256'):
-        if get_file_hash(full_path) != current.get('lfs_sha256'):
-            return True  # File hash on disk differs from current metadata, should download
-        return current.get('lfs_sha256') != stored.get('lfs_sha256')  # Compare with stored metadata
+        # Skip re-hash when stored metadata already matches the current remote object.
+        if stored.get('lfs_sha256') == current.get('lfs_sha256'):
+            return False
+        return get_file_hash(full_path) != current.get('lfs_sha256')
 
-    # For non-LFS files, compare size and blob_id to current remote repository metadata
-    return current.get('size') != stored.get('size') or current.get('blob_id') != stored.get('blob_id')
+    # Non-LFS: size already matches remote. Re-download only if blob identity changed.
+    if file_path not in stored_metadata:
+        return False
+    return current.get('blob_id') != stored.get('blob_id')
 
 
 def load_stored_metadata(metadata_file: Optional[str]) -> Dict:
@@ -623,7 +651,8 @@ def download_file(
         filename: str,
         output_dir: str,
         use_auth_token: Optional[str],
-        revision: str = "main"
+        revision: str = "main",
+        force_download: bool = False,
 ) -> str:
     """
     Download a single file from a Hugging Face repository.
@@ -635,6 +664,8 @@ def download_file(
         output_dir (str): The directory to save the downloaded file.
         use_auth_token (Optional[str]): The authentication token to use.
         revision (str): The specific revision to download from (default: "main").
+        force_download (bool): If True, discard incomplete local data and re-download.
+            Defaults to False so interrupted transfers can resume.
 
     Returns:
         str: The path to the downloaded file.
@@ -650,7 +681,7 @@ def download_file(
             filename=filename,
             revision=revision,
             local_dir=output_dir,
-            force_download=True,
+            force_download=force_download,
             token=use_auth_token
         )
     except Exception as e:
@@ -672,7 +703,7 @@ def download_repo(
         revision: str = "main",
         force: bool = False,
         ignore_patterns: Optional[List[str]] = None,
-):
+) -> bool:
     """
     Download all files from a Hugging Face repository.
 
@@ -685,42 +716,80 @@ def download_repo(
         revision (str): The specific revision to download from (default: "main").
         force (bool): If True, force download all files regardless of metadata.
         ignore_patterns (Optional[List[str]]): A list of glob patterns for files to ignore.
+
+    Returns:
+        bool: True only if every non-ignored remote file is present and complete on disk.
     """
     stored_metadata = load_stored_metadata(metadata_file)
     current_metadata = get_repo_tree_metadata(repo_id, repo_type, revision, use_auth_token)
 
     if current_metadata is None:
         logger.error("Failed to fetch repository metadata. Aborting download.")
-        return
+        return False
 
     files_to_download = [
         file for file, metadata in current_metadata.items()
         if force or should_download_file(file, current_metadata, stored_metadata, output_dir)
     ]
 
+    if ignore_patterns:
+        files_to_download = [
+            file for file in files_to_download
+            if not should_ignore_file(file, ignore_patterns)
+        ]
+
     if not files_to_download:
         logger.info("All files are up to date. No download necessary.")
-        return
-
-    for file in tqdm(files_to_download, desc=f"Downloading {repo_type} files (revision: {revision})", unit="file"):
-        if ignore_patterns and should_ignore_file(file, ignore_patterns):
-            logger.info(f"Skipping ignored file: {file}")
-            continue
-        try:
-            local_file = download_file(repo_id, repo_type, file, output_dir, use_auth_token, revision)
-            logger.info(f"Downloaded: {local_file}")
-        except Exception as e:
-            logger.error(f"Error downloading {file}: {str(e)}")
-            logger.info("Retrying download...")
+    else:
+        download_failures: List[str] = []
+        for file in tqdm(files_to_download, desc=f"Downloading {repo_type} files (revision: {revision})", unit="file"):
             try:
-                local_file = download_file(repo_id, repo_type, file, output_dir, use_auth_token, revision)
-                logger.info(f"Successfully downloaded on retry: {local_file}")
+                local_file = download_file(
+                    repo_id, repo_type, file, output_dir, use_auth_token, revision,
+                    force_download=force,
+                )
+                logger.info(f"Downloaded: {local_file}")
             except Exception as e:
-                logger.error(f"Failed to download {file} after retry: {str(e)}")
+                logger.error(f"Error downloading {file}: {str(e)}")
+                logger.info("Retrying download...")
+                try:
+                    local_file = download_file(
+                        repo_id, repo_type, file, output_dir, use_auth_token, revision,
+                        force_download=force,
+                    )
+                    logger.info(f"Successfully downloaded on retry: {local_file}")
+                except Exception as e:
+                    logger.error(f"Failed to download {file} after retry: {str(e)}")
+                    download_failures.append(file)
 
-    # Store the new metadata for future comparisons
-    store_metadata(metadata_file, current_metadata)
+        if download_failures:
+            logger.error(f"{len(download_failures)} file(s) failed to download:")
+            for failed_file in download_failures:
+                logger.error(f"  - {failed_file}")
+
+    # Metadata must reflect disk reality, not "we finished the loop".
+    verified_metadata: Dict = {}
+    incomplete_files: List[str] = []
+    for file, metadata in current_metadata.items():
+        if ignore_patterns and should_ignore_file(file, ignore_patterns):
+            continue
+        if file_is_complete(file, metadata, output_dir, verify_hash=False):
+            verified_metadata[file] = metadata
+        else:
+            incomplete_files.append(file)
+
+    store_metadata(metadata_file, verified_metadata)
+
+    if incomplete_files:
+        logger.error(
+            f"Download incomplete: {len(incomplete_files)} file(s) missing or wrong size in {output_dir}"
+        )
+        for incomplete_file in incomplete_files:
+            logger.error(f"  - {incomplete_file}")
+        return False
+
     logger.info(f"Download completed. Files are stored in: {output_dir}")
+    return True
 
 
 def process_single_repository(
@@ -754,8 +823,8 @@ def process_single_repository(
         # Generate the metadata file path
         metadata_file = get_metadata_file(output_dir, formatted_repo_id)
 
-        # Main download function
-        download_repo(
+        # Main download function — success means every non-ignored file is on disk
+        return download_repo(
             repo_id,
             repo_type,
             output_dir,
@@ -765,7 +834,6 @@ def process_single_repository(
             args.force,
             ignore_patterns
         )
-        return True
     except KeyboardInterrupt:
         logger.warning(f"Download interrupted by user for {url}.")
         return False
