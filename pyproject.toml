@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "huggingface-repo-downloader"
+version = "1.0.0"
+description = "Download Hugging Face repositories with resume support and optional fast transfer."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Nima Mehrani" },
+]
+keywords = ["huggingface", "download", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "huggingface_hub~=0.24.5",
+    "tqdm~=4.66.5",
+    "hf_transfer~=0.1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/nmehran/huggingface-repo-downloader"
+Issues = "https://github.com/nmehran/huggingface-repo-downloader/issues"
+
+[project.scripts]
+huggingface-repo-downloader = "huggingface_downloader:cli"
+
+[tool.setuptools]
+py-modules = ["huggingface_downloader"]

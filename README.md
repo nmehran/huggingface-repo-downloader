@@ -14,23 +14,26 @@ This Python script allows you to download repositories from Hugging Face, includ
 
 ## Installation
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/nmehran/huggingface-repo-downloader.git
-   cd huggingface-repo-downloader
-   ```
+```
+pip install huggingface-repo-downloader
+```
 
-2. Install the required packages:
-   ```
-   pip install -r requirements.txt
-   ```
+From source:
+
+```
+git clone https://github.com/nmehran/huggingface-repo-downloader.git
+cd huggingface-repo-downloader
+pip install -e .
+```
 
 ## Usage
 
 ```
-python huggingface_downloader.py <repository_url> [options]
-python huggingface_downloader.py --url-file <file_path> [options]
+huggingface-repo-downloader <repository_url> [options]
+huggingface-repo-downloader --url-file <file_path> [options]
 ```
+
+The `python huggingface_downloader.py ...` form still works from a clone.
 
 ### Options
 

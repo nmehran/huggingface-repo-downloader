@@ -951,9 +951,13 @@ def main():
     return len(results['failure']) == 0, results
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry point for package installs."""
     start_time = time.time()
     success_main, results_main = main()
     execution_time_main = time.time() - start_time
-
     print_summary_and_exit(success_main, results_main, execution_time_main)
+
+
+if __name__ == "__main__":
+    cli()
